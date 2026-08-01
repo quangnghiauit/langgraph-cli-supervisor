@@ -1,0 +1,97 @@
+"""Supervisor node: the central brain that reads state and routes to a specialist."""
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from .. import config
+from ..state import OrchestratorState
+from .. import usage_tracker
+
+ROUTES = ("claude_code", "opencode", "aider", "codex", "FINISH")
+
+# Fallback order when the Supervisor's chosen agent is exhausted.
+# codex is excluded — it is the test runner, not a code-writing fallback.
+FALLBACK_ORDER = ("claude_code", "opencode", "aider")
+
+SYSTEM_PROMPT = """You are the Supervisor of a coding-agent pipeline. You route work \
+between four specialist CLI agents operating on a local repository:
+
+- claude_code: deep analysis of complex source code; general-purpose CLI/file tasks.
+- opencode: large-scale refactoring and multi-file project analysis.
+- aider: free fallback agent for refactoring and code changes (uses cheaper models).
+- codex: generates, runs, and checks automated tests.
+
+Given the task, the last agent that ran, its output, and the latest test result, decide \
+which specialist should act next, and write the specific instruction they should follow. \
+Route to FINISH once the task is complete and tests pass (or there is nothing left to do).
+
+IMPORTANT — daily limits: Each agent has a daily invocation budget. The list of \
+currently available agents is provided in the context. You MUST only route to agents \
+that are in the "available agents" list. If your preferred agent is not available, \
+route to the next best available agent instead. If no code-writing agent is available, \
+route to FINISH.
+
+Do not route to "codex" twice in a row without another agent acting in between, unless no \
+other agent has run yet."""
+
+
+class SupervisorDecision(BaseModel):
+    next: Literal["claude_code", "opencode", "aider", "codex", "FINISH"] = Field(
+        description="Which node should run next."
+    )
+    instructions: str = Field(
+        default="", description="The concrete instruction for the chosen agent. Empty if FINISH."
+    )
+    summary: str = Field(
+        default="", description="One-line status summary for a human watching the run."
+    )
+
+
+def _fallback_for(chosen: str, available: list[str]) -> str:
+    """If *chosen* is unavailable, return the next available agent in fallback order."""
+    if chosen in available or chosen in ("codex", "FINISH"):
+        return chosen
+    for agent in FALLBACK_ORDER:
+        if agent in available:
+            return agent
+    return "FINISH"
+
+
+def supervisor_node(state: OrchestratorState) -> dict:
+    llm = config.supervisor_llm().with_structured_output(SupervisorDecision)
+
+    available = usage_tracker.available_agents()
+    usage_status = usage_tracker.status()
+
+    context = (
+        f"Task: {state['task']}\n"
+        f"Last agent: {state.get('last_agent') or 'none'}\n"
+        f"Last output: {(state.get('last_output') or '')[:4000]}\n"
+        f"Test result: {state.get('test_result') or 'unknown'}\n"
+        f"Attempt: {state.get('attempts', 0)} / {state.get('max_attempts', config.MAX_TEST_ATTEMPTS)}\n"
+        f"Available agents: {', '.join(available) if available else 'none'}\n"
+        f"Usage status: {usage_status}\n"
+    )
+
+    decision: SupervisorDecision = llm.invoke(
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context},
+        ]
+    )
+
+    # Safety net: if the LLM routes to an exhausted agent, fall back automatically.
+    routed = _fallback_for(decision.next, available)
+    if routed != decision.next:
+        decision.summary = (
+            f"{decision.summary} [fallback: {decision.next}→{routed} "
+            f"(daily limit reached)]"
+        )
+        decision.next = routed
+
+    return {
+        "next": decision.next,
+        "instructions": decision.instructions,
+        "available_agents": available,
+        "final_summary": decision.summary,
+    }
