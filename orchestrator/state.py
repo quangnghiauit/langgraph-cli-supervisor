@@ -22,7 +22,5 @@ class OrchestratorState(TypedDict):
     attempts: int
     max_attempts: int
 
-    available_agents: list[str]  # agents that still have daily budget
-
     history: list[HistoryEntry]
     final_summary: str

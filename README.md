@@ -1,7 +1,8 @@
-# agent-orchestrator
+# LangGraph CLI Supervisor
 
-A LangGraph Supervisor that routes work between three CLI coding agents —
-**Claude Code**, **OpenCode**, and **Codex** — on a local repository.
+A small [LangGraph](https://github.com/langchain-ai/langgraph) supervisor that
+routes work between three real coding CLIs — **Claude Code**, **OpenCode**, and
+**Codex** — on a local repository.
 
 ```
             ┌───────────────┐
@@ -36,14 +37,18 @@ A LangGraph Supervisor that routes work between three CLI coding agents —
 
 ## Setup
 
+Requirements: Python 3.9+, plus `claude`, `opencode`, and `codex` on `PATH`.
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
-# then edit .env: set ANTHROPIC_API_KEY or OPENAI_API_KEY
 ```
 
-The three CLIs must be on `PATH`: `claude`, `opencode`, `codex`. Each must be
-logged in / have its own credentials configured independently (this project
-only shells out to them — it does not manage their auth).
+Set **one** routing-model API key in `.env`: `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY`. This powers only the LangGraph Supervisor. Each coding CLI
+must be logged in/configured independently; this project only invokes them.
 
 ## Run
 
@@ -60,6 +65,12 @@ python3 main.py --thread-id default --resume "the flaky test is unrelated, ship 
 
 Use `--thread-id` to run multiple independent tasks/threads against the same
 checkpoint database.
+
+## Self-check
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Permission modes (read before running unattended)
 
